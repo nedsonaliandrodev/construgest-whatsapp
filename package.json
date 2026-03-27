@@ -1,0 +1,16 @@
+{
+  "name": "construgest-whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp persistent server for ConstruGest",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "qrcode": "^1.5.4"
+  }
+}
