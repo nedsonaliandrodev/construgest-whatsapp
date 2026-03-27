@@ -37,18 +37,36 @@ const state = {
   phone: null,
 };
 
-async function connectWhatsApp() {
-  if (state.status === "connected" || state.status === "connecting") {
+async function connectWhatsApp(isRetry = false) {
+  // Only block duplicate calls from the API, not from internal retries
+  if (!isRetry && (state.status === "connected" || state.status === "connecting")) {
+    console.log(`[WA] Already ${state.status}, returning current state`);
     return { status: state.status, qr: state.qrDataUrl };
+  }
+
+  // Clean up previous socket if any
+  if (state.socket) {
+    try {
+      state.socket.ev.removeAllListeners("connection.update");
+      state.socket.ev.removeAllListeners("creds.update");
+      state.socket.end(undefined);
+    } catch (e) {
+      console.log("[WA] Cleanup previous socket:", e.message);
+    }
+    state.socket = null;
   }
 
   state.status = "connecting";
   state.qr = null;
   state.qrDataUrl = null;
+  console.log(`[WA] Connecting... (retry: ${isRetry}, attempt: ${state.retryCount})`);
 
   try {
     const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
+
+    const hasCreds = authState.creds?.registered;
+    console.log(`[WA] Baileys version: ${version.join(".")}, hasCreds: ${hasCreds}`);
 
     const sock = makeWASocket({
       version,
@@ -58,12 +76,15 @@ async function connectWhatsApp() {
       },
       printQRInTerminal: true,
       browser: ["ConstruGest", "Chrome", "1.0.0"],
+      connectTimeoutMs: 60000,
+      qrTimeout: 60000,
     });
 
     state.socket = sock;
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
+      console.log("[WA] connection.update:", JSON.stringify({ connection, qr: !!qr, hasLastDisconnect: !!lastDisconnect }));
 
       if (qr) {
         state.status = "qr";
@@ -71,15 +92,16 @@ async function connectWhatsApp() {
         try {
           state.qrDataUrl = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
         } catch (e) {
-          console.error("QR generation error:", e);
+          console.error("[WA] QR generation error:", e);
         }
-        console.log("[WA] QR code generated");
+        console.log("[WA] QR code generated, waiting for scan...");
       }
 
       if (connection === "close") {
-        const code = lastDisconnect?.error?.output?.statusCode;
-        const loggedOut = code === DisconnectReason.loggedOut;
-        console.log(`[WA] Connection closed. Code: ${code}. LoggedOut: ${loggedOut}`);
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const errorMsg = lastDisconnect?.error?.message || "unknown";
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        console.log(`[WA] Connection closed. Code: ${statusCode}, Reason: ${errorMsg}, LoggedOut: ${loggedOut}`);
 
         state.socket = null;
         state.qr = null;
@@ -89,20 +111,21 @@ async function connectWhatsApp() {
         if (loggedOut) {
           state.status = "disconnected";
           state.retryCount = 0;
-          // Clean auth files on logout
           const fs = require("fs");
           if (fs.existsSync(AUTH_DIR)) {
             fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            console.log("[WA] Auth files cleaned after logout");
           }
         } else if (state.retryCount < 5) {
           state.retryCount++;
-          state.status = "connecting";
-          console.log(`[WA] Reconnecting... attempt ${state.retryCount}`);
-          setTimeout(connectWhatsApp, 3000);
+          // Set to disconnected so the retry can pass the guard
+          state.status = "disconnected";
+          console.log(`[WA] Will reconnect in 3s... attempt ${state.retryCount}/5`);
+          setTimeout(() => connectWhatsApp(true), 3000);
         } else {
           state.status = "disconnected";
           state.retryCount = 0;
-          console.log("[WA] Max retries reached");
+          console.log("[WA] Max retries (5) reached, giving up");
         }
       }
 
@@ -116,7 +139,11 @@ async function connectWhatsApp() {
       }
     });
 
-    sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", async () => {
+      console.log("[WA] Credentials updated, saving...");
+      await saveCreds();
+      console.log("[WA] Credentials saved to disk");
+    });
 
     return { status: state.status };
   } catch (err) {
