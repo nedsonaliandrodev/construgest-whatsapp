@@ -118,8 +118,8 @@ async function connectWhatsApp(isRetry = false) {
           }
         } else if (state.retryCount < 5) {
           state.retryCount++;
-          // Set to disconnected so the retry can pass the guard
-          state.status = "disconnected";
+          // Keep as "connecting" so frontend keeps polling
+          state.status = "connecting";
           console.log(`[WA] Will reconnect in 3s... attempt ${state.retryCount}/5`);
           setTimeout(() => connectWhatsApp(true), 3000);
         } else {
